@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#07111f" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Poker Clock" />
+    <meta name="description" content="Турнирные часы дилера и калькулятор побочных банков." />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" href="./icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="./icon.svg" />
+    <link rel="stylesheet" href="./styles.css" />
+    <script src="https://telegram.org/js/telegram-web-app.js?64"></script>
+    <title>Poker Dealer Clock</title>
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">HOME GAME · DEALER</p>
+          <h1>Poker Clock</h1>
+        </div>
+        <div class="topbar-actions">
+          <span class="sync-badge" id="telegramStatus" hidden>Telegram</span>
+          <button class="icon-button" id="soundButton" type="button" aria-label="Звук включён" title="Включить или выключить звук">
+            <span aria-hidden="true">♪</span>
+          </button>
+        </div>
+      </header>
+
+      <main>
+        <section class="view is-active" id="clockView" data-view="clock" aria-labelledby="clockTab">
+          <div class="level-strip">
+            <span class="pill" id="levelLabel">Уровень 1</span>
+            <span class="muted" id="levelDuration">15 минут</span>
+          </div>
+
+          <article class="timer-card" id="timerCard">
+            <div class="timer-glow" aria-hidden="true"></div>
+            <p class="timer-kicker" id="timerKicker">ДО ПОВЫШЕНИЯ</p>
+            <div class="timer" id="timerDisplay" role="timer" aria-live="off">15:00</div>
+            <div class="progress-track" aria-hidden="true"><div class="progress-bar" id="progressBar"></div></div>
+
+            <div class="blinds-block" id="currentBlindsBlock">
+              <p class="caption">ТЕКУЩИЕ БЛАЙНДЫ</p>
+              <p class="blinds" id="currentBlinds">25 / 50</p>
+              <p class="ante" id="currentAnte">без анте</p>
+            </div>
+          </article>
+
+          <div class="next-card">
+            <div>
+              <p class="caption">СЛЕДОМ</p>
+              <p class="next-blinds" id="nextBlinds">50 / 100</p>
+            </div>
+            <div class="next-meta" id="nextMeta">15 мин · без анте</div>
+          </div>
+
+          <div class="primary-controls">
+            <button class="control-button secondary" id="minusMinute" type="button" aria-label="Убавить одну минуту">−1</button>
+            <button class="play-button" id="playButton" type="button" aria-label="Запустить таймер">
+              <span id="playIcon" aria-hidden="true">▶</span>
+            </button>
+            <button class="control-button secondary" id="plusMinute" type="button" aria-label="Добавить одну минуту">+1</button>
+          </div>
+
+          <div class="level-controls">
+            <button class="text-button" id="previousLevel" type="button">← Предыдущий</button>
+            <button class="text-button strong" id="nextLevel" type="button">Следующий →</button>
+          </div>
+
+          <div class="status-row">
+            <div><span>Прошло</span><strong id="elapsedTime">00:00</strong></div>
+            <div><span>Стартовый стек</span><strong id="startingStackDisplay">3 000</strong></div>
+            <button class="mini-button" id="resetLevel" type="button">Сбросить уровень</button>
+          </div>
+        </section>
+
+        <section class="view" id="structureView" data-view="structure" aria-labelledby="structureTab">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">НАСТРОЙКА ТУРНИРА</p>
+              <h2>Структура</h2>
+            </div>
+            <button class="mini-button" id="resetStructure" type="button">По умолчанию</button>
+          </div>
+
+          <div class="settings-card">
+            <label class="field-label" for="startingStack">Стартовый стек</label>
+            <input class="field-input" id="startingStack" inputmode="numeric" type="number" min="1" step="100" value="3000" />
+          </div>
+
+          <div class="schedule" id="scheduleList"></div>
+          <div class="add-row">
+            <button class="outline-button" id="addLevel" type="button">+ Уровень</button>
+            <button class="outline-button" id="addBreak" type="button">+ Перерыв</button>
+          </div>
+          <p class="helper">Изменения сохраняются на этом устройстве автоматически. Текущий уровень не переключается.</p>
+        </section>
+
+        <section class="view" id="allinView" data-view="allin" aria-labelledby="allinTab">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">SIDE POT CALCULATOR</p>
+              <h2>Несколько олл-инов</h2>
+            </div>
+            <button class="mini-button" id="clearAllin" type="button">Очистить</button>
+          </div>
+
+          <div class="info-card">
+            Введите, сколько каждый игрок уже вложил в эту раздачу. Игрок в фолде участвует деньгами в банке, но не может его выиграть.
+          </div>
+
+          <div class="players-table">
+            <div class="player-head" aria-hidden="true"><span>Игрок</span><span>Вложил</span><span>В игре</span><span></span></div>
+            <div id="playerRows"></div>
+          </div>
+          <button class="outline-button full" id="addPlayer" type="button">+ Добавить игрока</button>
+          <button class="calculate-button" id="calculatePots" type="button">Рассчитать банки</button>
+
+          <div class="calculation-results" id="calculationResults" aria-live="polite"></div>
+        </section>
+      </main>
+
+      <nav class="bottom-nav" aria-label="Разделы приложения">
+        <button class="nav-button is-active" id="clockTab" data-target="clock" type="button">
+          <span class="nav-icon" aria-hidden="true">◷</span><span>Часы</span>
+        </button>
+        <button class="nav-button" id="structureTab" data-target="structure" type="button">
+          <span class="nav-icon" aria-hidden="true">≡</span><span>Структура</span>
+        </button>
+        <button class="nav-button" id="allinTab" data-target="allin" type="button">
+          <span class="nav-icon" aria-hidden="true">♠</span><span>Олл-ины</span>
+        </button>
+      </nav>
+    </div>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script src="./app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,14 @@
+{
+  "name": "Poker Dealer Clock",
+  "short_name": "Poker Clock",
+  "description": "Турнирные часы дилера и калькулятор побочных банков.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#050a13",
+  "theme_color": "#07111f",
+  "orientation": "portrait",
+  "icons": [
+    { "src": "./icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
