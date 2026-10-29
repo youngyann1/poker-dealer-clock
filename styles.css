@@ -244,6 +244,7 @@ h2 { margin: 2px 0 0; font-size: 1.8rem; letter-spacing: -0.04em; }
 .compact-copy { margin-bottom: 0; }
 .ante-card .ante-mode { margin-top: 10px; }
 .preset-note { margin: 10px 2px 0; color: #6f8099; font-size: .69rem; line-height: 1.45; }
+.auto-method { margin: 10px 0 0; padding: 10px 11px; border: 1px solid rgba(70, 229, 255, .14); border-radius: 12px; background: rgba(70, 229, 255, .045); color: #9fcbd4; font-size: .69rem; line-height: 1.45; }
 .field-label { display: block; margin-bottom: 7px; color: var(--muted); font-size: 0.74rem; font-weight: 700; }
 .field-input {
   width: 100%;
@@ -281,6 +282,7 @@ h2 { margin: 2px 0 0; font-size: 1.8rem; letter-spacing: -0.04em; }
 .schedule { display: grid; gap: 9px; }
 .schedule-item { display: grid; grid-template-columns: 40px 1fr 1fr 1fr 38px; gap: 7px; align-items: end; padding: 12px 10px; border-radius: 16px; }
 .schedule-item.is-break { grid-template-columns: 40px 1fr 1fr 38px; border-color: rgba(255, 204, 102, 0.2); }
+.schedule-item.is-overtime { border-style: dashed; border-color: rgba(70, 229, 255, .16); background: rgba(7, 17, 30, .58); }
 .break-chip-note { grid-column: 2 / -1; display: grid; gap: 3px; margin-top: 2px; color: #aab7c8; font-size: .67rem; line-height: 1.4; }
 .break-chip-note strong { color: var(--amber); font-size: .68rem; }
 .schedule-number { align-self: center; color: var(--muted); font-size: 0.74rem; font-weight: 800; text-align: center; }
@@ -291,6 +293,7 @@ h2 { margin: 2px 0 0; font-size: 1.8rem; letter-spacing: -0.04em; }
 .delete-button:disabled { opacity: .28; cursor: default; }
 .break-label { align-self: center; color: var(--amber); font-size: 0.85rem; font-weight: 800; }
 .schedule-ante { grid-column: 2 / 5; margin: 1px 2px -1px; color: #6f8099; font-size: .65rem; }
+.overtime-tag { display: inline-block; margin-right: 7px; padding: 2px 6px; border-radius: 999px; background: rgba(70, 229, 255, .09); color: #83dce9; font-size: .58rem; font-weight: 800; text-transform: uppercase; }
 .add-row { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; margin-top: 12px; }
 .outline-button { min-height: 48px; border: 1px solid rgba(70, 229, 255, 0.22); border-radius: 15px; background: var(--cyan-soft); color: var(--cyan); font-weight: 750; }
 .outline-button.full { width: 100%; margin-top: 10px; }
