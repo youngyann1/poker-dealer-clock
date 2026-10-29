@@ -4,6 +4,23 @@ const telegramSdk = window.Telegram?.WebApp || null;
 const telegram = telegramSdk && (telegramSdk.initData || (telegramSdk.platform && telegramSdk.platform !== "unknown")) ? telegramSdk : null;
 
 const DEFAULT_CHIPS = [25, 100, 500, 1000, 5000];
+const BASE_STARTING_STACK = 3000;
+const BASE_BLIND_LEVELS = [
+  [25, 25],
+  [25, 50],
+  [50, 100],
+  [75, 150],
+  [100, 200],
+  [150, 300],
+  [200, 400],
+  [300, 600],
+  [400, 800],
+  [500, 1000],
+  [600, 1200],
+  [800, 1600],
+  [1000, 2000],
+  [1500, 3000]
+];
 const DEFAULT_CHIP_INVENTORY = [
   { denomination: 25, count: 100 },
   { denomination: 100, count: 100 },
@@ -11,7 +28,7 @@ const DEFAULT_CHIP_INVENTORY = [
   { denomination: 1000, count: 25 },
   { denomination: 5000, count: 10 }
 ];
-const AUTO_STRUCTURE_VERSION = 3;
+const AUTO_STRUCTURE_VERSION = 4;
 
 function normalizeChipDenominations(value) {
   const source = Array.isArray(value) ? value : String(value || "").match(/\d+/g) || [];
@@ -148,25 +165,34 @@ function buildAutomaticStructure(startingStack, hours, anteEnabled = false, chip
   const stack = Math.max(100, Number(startingStack) || 3000);
   const selectedHours = Math.min(6, Math.max(3, Number(hours) || 4));
   const chips = normalizeChipDenominations(chipDenominations);
-  const levelCount = selectedHours * 4;
-  const levelDuration = selectedHours * 60 / levelCount;
   const smallestChip = chips[0];
-  const firstUnit = chipUnitForTarget(Math.max(smallestChip * 2, stack / 60), chips);
-  const firstBb = Math.max(smallestChip * 2, Math.round((stack / 60) / firstUnit) * firstUnit);
-  const finalTarget = Math.max(firstBb * 2, stack * 2);
-  const ratio = Math.pow(finalTarget / firstBb, 1 / Math.max(1, levelCount - 1));
-  const stages = [];
-  let previousBb = 0;
-
-  for (let index = 0; index < levelCount; index += 1) {
-    const targetBb = index === levelCount - 1 ? finalTarget : firstBb * Math.pow(ratio, index);
+  const scale = Math.max(stack / BASE_STARTING_STACK, smallestChip / 25);
+  const levels = BASE_BLIND_LEVELS.map(([baseSb, baseBb]) => {
+    const targetSb = baseSb * scale;
+    const targetBb = baseBb * scale;
     const unit = chipUnitForTarget(targetBb, chips);
-    let bb = Math.max(unit * 2, Math.round(targetBb / unit) * unit);
-    if (bb <= previousBb) bb = Math.ceil((previousBb + unit) / unit) * unit;
-    const sb = Math.max(unit, Math.floor((bb / 2) / unit) * unit);
-    stages.push({ type: "level", duration: levelDuration, sb, bb, ante: anteEnabled ? bb : 0 });
-    previousBb = bb;
-    if ((index + 1) % 4 === 0 && index < levelCount - 1) stages.push({ type: "break", duration: 10 });
+    let sb = Math.max(unit, Math.round(targetSb / unit) * unit);
+    let bb = Math.max(unit, Math.round(targetBb / unit) * unit);
+    if (baseSb === baseBb) sb = bb;
+    else if (bb <= sb) bb = sb + unit;
+    return { sb, bb };
+  });
+  const stages = [];
+  const minimumPerHour = Math.floor(levels.length / selectedHours);
+  const hoursWithExtraLevel = levels.length % selectedHours;
+  let levelIndex = 0;
+
+  for (let hour = 0; hour < selectedHours; hour += 1) {
+    const levelsThisHour = minimumPerHour + (hour < hoursWithExtraLevel ? 1 : 0);
+    const baseDuration = Math.floor(60 / levelsThisHour);
+    const longerLevels = 60 % levelsThisHour;
+    for (let position = 0; position < levelsThisHour; position += 1) {
+      const level = levels[levelIndex];
+      const duration = baseDuration + (position < longerLevels ? 1 : 0);
+      stages.push({ type: "level", duration, sb: level.sb, bb: level.bb, ante: anteEnabled ? level.bb : 0 });
+      levelIndex += 1;
+    }
+    if (hour < selectedHours - 1) stages.push({ type: "break", duration: 10 });
   }
 
   return annotateChipChanges(stages, chips, stack, initialInPlay);
@@ -1102,7 +1128,7 @@ function initialize() {
   renderPlayers();
   initializeTelegram();
   setInterval(timerTick, 250);
-  if ("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js?v=6");
+  if ("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js?v=7");
 }
 
 initialize();
