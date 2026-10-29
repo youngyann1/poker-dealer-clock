@@ -4,7 +4,6 @@ const telegramSdk = window.Telegram?.WebApp || null;
 const telegram = telegramSdk && (telegramSdk.initData || (telegramSdk.platform && telegramSdk.platform !== "unknown")) ? telegramSdk : null;
 
 const DEFAULT_CHIPS = [25, 100, 500, 1000, 5000];
-const BASE_STARTING_STACK = 3000;
 const BASE_BLIND_LEVELS = [
   [25, 25],
   [25, 50],
@@ -38,7 +37,10 @@ const DEFAULT_CHIP_INVENTORY = [
   { denomination: 1000, count: 25 },
   { denomination: 5000, count: 10 }
 ];
-const AUTO_STRUCTURE_VERSION = 5;
+const AUTO_STRUCTURE_VERSION = 6;
+const TARGET_STARTING_BIG_BLINDS = 120;
+const FINISH_CHIP_DIVISOR = 30;
+const OVERTIME_LEVEL_COUNT = 4;
 
 function normalizeChipDenominations(value) {
   const source = Array.isArray(value) ? value : String(value || "").match(/\d+/g) || [];
@@ -180,14 +182,20 @@ function annotateChipChanges(stages, chips, startingStack, initialInPlay = null)
   return stages;
 }
 
-function buildAutomaticStructure(startingStack, hours, anteEnabled = false, chipDenominations = DEFAULT_CHIPS, initialInPlay = null) {
+function distributeMinutes(totalMinutes, levelCount) {
+  const safeCount = Math.max(1, levelCount);
+  const base = Math.floor(totalMinutes / safeCount);
+  const remainder = totalMinutes - base * safeCount;
+  return Array.from({ length: safeCount }, (_, index) => base + (index < remainder ? 1 : 0));
+}
+
+function scaledBlindLadder(startingStack, chipDenominations) {
   const stack = Math.max(100, Number(startingStack) || 3000);
-  const selectedHours = Math.min(6, Math.max(3, Number(hours) || 4));
   const chips = normalizeChipDenominations(chipDenominations);
   const smallestChip = chips[0];
-  const scale = Math.max(stack / BASE_STARTING_STACK, smallestChip / 25);
-  const levelCount = selectedHours * 4;
-  const levels = BASE_BLIND_LEVELS.slice(0, levelCount).map(([baseSb, baseBb]) => {
+  const targetStartingBb = stack / TARGET_STARTING_BIG_BLINDS;
+  const scale = Math.max(targetStartingBb / 25, smallestChip / 25);
+  const levels = BASE_BLIND_LEVELS.map(([baseSb, baseBb]) => {
     const targetSb = baseSb * scale;
     const targetBb = baseBb * scale;
     const unit = chipUnitForPair(targetSb, targetBb, chips);
@@ -197,13 +205,72 @@ function buildAutomaticStructure(startingStack, hours, anteEnabled = false, chip
     else if (bb <= sb) bb = sb + unit;
     return { sb, bb };
   });
+
+  return levels.filter((level, index) => {
+    if (!index) return true;
+    const previous = levels[index - 1];
+    return level.sb !== previous.sb || level.bb !== previous.bb;
+  });
+}
+
+function insertHourlyBreaks(levels, scheduledLevelCount, startingStack, chips, initialInPlay) {
   const stages = [];
+  let playedMinutes = 0;
+  let nextBreakAt = 60;
+
   levels.forEach((level, index) => {
-    stages.push({ type: "level", duration: 15, sb: level.sb, bb: level.bb, ante: anteEnabled ? level.bb : 0 });
-    if ((index + 1) % 4 === 0 && index < levels.length - 1) stages.push({ type: "break", duration: 10 });
+    stages.push(level);
+    playedMinutes += level.duration;
+    const nextLevel = levels[index + 1];
+    if (!nextLevel || nextBreakAt > playedMinutes + 60) return;
+    const nextPlayedMinutes = playedMinutes + nextLevel.duration;
+    const currentDistance = Math.abs(playedMinutes - nextBreakAt);
+    const nextDistance = Math.abs(nextPlayedMinutes - nextBreakAt);
+    if (playedMinutes >= nextBreakAt || currentDistance <= nextDistance) {
+      stages.push({ type: "break", duration: 10, overtime: index + 1 >= scheduledLevelCount });
+      nextBreakAt += 60;
+    }
   });
 
-  return annotateChipChanges(stages, chips, stack, initialInPlay);
+  return annotateChipChanges(stages, chips, startingStack, initialInPlay);
+}
+
+function buildAutomaticStructure(startingStack, hours, anteEnabled = false, chipDenominations = DEFAULT_CHIPS, initialInPlay = null, playerCount = 8) {
+  const stack = Math.max(100, Number(startingStack) || 3000);
+  const players = Math.max(2, Math.floor(Number(playerCount) || 8));
+  const selectedHours = Math.min(6, Math.max(3, Number(hours) || 4));
+  const gameMinutes = selectedHours * 60;
+  const chips = normalizeChipDenominations(chipDenominations);
+  const ladder = scaledBlindLadder(stack, chips);
+  const chipsInPlay = stack * players;
+  const targetFinishBb = chipsInPlay / FINISH_CHIP_DIVISOR;
+  let finishIndex = ladder.findIndex((level) => level.bb >= targetFinishBb);
+  if (finishIndex < 0) finishIndex = ladder.length - 1;
+
+  const scheduledLevels = ladder.slice(0, finishIndex + 1);
+  const scheduledDurations = distributeMinutes(gameMinutes, scheduledLevels.length);
+  const overtimeLevels = ladder.slice(finishIndex + 1, finishIndex + 1 + OVERTIME_LEVEL_COUNT);
+  const overtimeDuration = Math.max(1, Math.round(gameMinutes / scheduledLevels.length));
+  const levels = [
+    ...scheduledLevels.map((level, index) => ({
+      type: "level",
+      duration: scheduledDurations[index],
+      sb: level.sb,
+      bb: level.bb,
+      ante: anteEnabled ? level.bb : 0,
+      overtime: false
+    })),
+    ...overtimeLevels.map((level) => ({
+      type: "level",
+      duration: overtimeDuration,
+      sb: level.sb,
+      bb: level.bb,
+      ante: anteEnabled ? level.bb : 0,
+      overtime: true
+    }))
+  ];
+
+  return insertHourlyBreaks(levels, scheduledLevels.length, stack, chips, initialInPlay);
 }
 
 const saved = loadState();
@@ -219,11 +286,11 @@ const initialMode = saved.structureMode === "manual" ? "manual" : "auto";
 const canRestoreStructure = Array.isArray(saved.structure) && saved.structure.length && (initialMode === "manual" || Number(saved.autoStructureVersion) === AUTO_STRUCTURE_VERSION);
 const initialStructure = canRestoreStructure
   ? saved.structure
-  : buildAutomaticStructure(initialStartingStack, initialAutoHours, initialAnteEnabled, initialChipDenominations, initialInPlay);
+  : buildAutomaticStructure(initialStartingStack, initialAutoHours, initialAnteEnabled, initialChipDenominations, initialInPlay, initialPlayerCount);
 initialStructure.forEach((stage) => {
   if (stage.type === "level") stage.ante = initialAnteEnabled ? Number(stage.bb) || 0 : 0;
 });
-const defaultStructure = buildAutomaticStructure(3000, 4, false, DEFAULT_CHIPS);
+const defaultStructure = buildAutomaticStructure(3000, 4, false, DEFAULT_CHIPS, null, 8);
 const state = {
   structure: initialStructure,
   structureMode: initialMode,
@@ -373,7 +440,7 @@ function applyStoredSnapshot(snapshot) {
   const restoreStructure = state.structureMode === "manual" || Number(snapshot.autoStructureVersion) === AUTO_STRUCTURE_VERSION;
   state.structure = restoreStructure
     ? snapshot.structure
-    : buildAutomaticStructure(state.startingStack, state.autoHours, state.anteEnabled, state.chipDenominations, inPlay);
+    : buildAutomaticStructure(state.startingStack, state.autoHours, state.anteEnabled, state.chipDenominations, inPlay, state.playerCount);
   state.structure.forEach((stage) => {
     if (stage.type === "level") stage.ante = state.anteEnabled ? Number(stage.bb) || 0 : 0;
   });
@@ -494,7 +561,9 @@ function renderClock() {
   const progress = clamp((state.remainingMs / duration) * 100, 0, 100);
   const isBreak = stage.type === "break";
 
-  $("#levelLabel").textContent = isBreak ? "Перерыв" : `Уровень ${nonBreakLevelNumber(state.levelIndex)}`;
+  $("#levelLabel").textContent = isBreak
+    ? (stage.overtime ? "Перерыв · доп. время" : "Перерыв")
+    : (stage.overtime ? `Доп. уровень ${nonBreakLevelNumber(state.levelIndex)}` : `Уровень ${nonBreakLevelNumber(state.levelIndex)}`);
   $("#levelLabel").classList.toggle("break", isBreak);
   $("#levelDuration").textContent = `${stage.duration} ${pluralMinutes(stage.duration)}`;
   $("#timerKicker").textContent = isBreak ? "ДО КОНЦА ПЕРЕРЫВА" : "ДО ПОВЫШЕНИЯ";
@@ -524,7 +593,7 @@ function renderClock() {
     $("#nextMeta").textContent = `${next.duration} ${pluralMinutes(next.duration)}`;
   } else {
     $("#nextBlinds").textContent = `${formatNumber(next.sb)} / ${formatNumber(next.bb)}`;
-    $("#nextMeta").textContent = `${next.duration} мин · ${next.ante ? `анте ${formatNumber(next.ante)}` : "без анте"}`;
+    $("#nextMeta").textContent = `${next.overtime ? "доп. время · " : ""}${next.duration} мин · ${next.ante ? `анте ${formatNumber(next.ante)}` : "без анте"}`;
   }
   $("#playIcon").textContent = state.running ? "Ⅱ" : "▶";
   $("#playButton").setAttribute("aria-label", state.running ? "Поставить таймер на паузу" : "Запустить таймер");
@@ -676,7 +745,7 @@ function renderSchedule() {
   state.structure.forEach((stage, index) => {
     if (stage.type === "level") levelNumber += 1;
     const item = document.createElement("div");
-    item.className = `schedule-item${stage.type === "break" ? " is-break" : ""}`;
+    item.className = `schedule-item${stage.type === "break" ? " is-break" : ""}${stage.overtime ? " is-overtime" : ""}`;
     if (stage.type === "break") {
       const chipNotes = state.structureMode === "auto" ? `
         <div class="break-chip-note">
@@ -696,7 +765,7 @@ function renderSchedule() {
         ${compactField("BB", stage.bb, "bb", index)}
         ${compactField("Минут", stage.duration, "duration", index)}
         <button class="delete-button" data-delete-stage="${index}" type="button" aria-label="Удалить уровень" ${editable ? "" : "disabled"}>×</button>
-        <div class="schedule-ante">${state.anteEnabled ? `Анте автоматически: ${formatNumber(stage.bb)}` : "Без анте"}</div>`;
+        <div class="schedule-ante">${stage.overtime ? '<span class="overtime-tag">Если игра затянется</span>' : ""}${state.anteEnabled ? `Анте автоматически: ${formatNumber(stage.bb)}` : "Без анте"}</div>`;
     }
     container.appendChild(item);
   });
@@ -711,9 +780,18 @@ function renderSchedule() {
   $("#stackHint").textContent = state.structureMode === "auto"
     ? "Изменение стека сразу пересчитает всю структуру."
     : "Стек сохраняется для справки; уровни в ручном режиме не пересчитываются.";
-  const gameMinutes = state.structure.filter((stage) => stage.type === "level").reduce((sum, stage) => sum + Math.max(0, Number(stage.duration) || 0), 0);
-  const breakMinutes = state.structure.filter((stage) => stage.type === "break").reduce((sum, stage) => sum + Math.max(0, Number(stage.duration) || 0), 0);
-  $("#autoSummary").textContent = `Стек ${formatNumber(state.startingStack)} · ${formatDurationWords(gameMinutes)} игры${breakMinutes ? ` + ${breakMinutes} мин перерывов` : ""}`;
+  const scheduledLevels = state.structure.filter((stage) => stage.type === "level" && !stage.overtime);
+  const gameMinutes = scheduledLevels.reduce((sum, stage) => sum + Math.max(0, Number(stage.duration) || 0), 0);
+  const breakMinutes = state.structure.filter((stage) => stage.type === "break" && !stage.overtime).reduce((sum, stage) => sum + Math.max(0, Number(stage.duration) || 0), 0);
+  const firstLevel = scheduledLevels[0];
+  const finishLevel = scheduledLevels.at(-1);
+  const startingDepth = firstLevel ? Math.round(state.startingStack / firstLevel.bb) : 0;
+  const durations = [...new Set(scheduledLevels.map((stage) => stage.duration))];
+  const durationText = durations.length === 1 ? `${durations[0]} мин` : `${Math.min(...durations)}–${Math.max(...durations)} мин`;
+  $("#autoSummary").textContent = `${state.playerCount} игроков · ${formatDurationWords(gameMinutes)} игры${breakMinutes ? ` + ${breakMinutes} мин перерывов` : ""}`;
+  $("#autoMethodSummary").textContent = firstLevel && finishLevel
+    ? `Старт: ${formatNumber(firstLevel.sb)} / ${formatNumber(firstLevel.bb)} (${startingDepth} ББ). Расчётный финиш: ${formatNumber(finishLevel.sb)} / ${formatNumber(finishLevel.bb)}. ${scheduledLevels.length} ${pluralLevels(scheduledLevels.length)} по ${durationText}; после них предусмотрены запасные уровни.`
+    : "Введите параметры турнира, чтобы рассчитать структуру.";
   renderChipInventory();
 }
 
@@ -830,7 +908,7 @@ function applyAutomaticStructure(hours, notify = true) {
   state.autoStructureVersion = AUTO_STRUCTURE_VERSION;
   const allocation = calculateStartingAllocation(state.startingStack, state.playerCount, state.chipInventory);
   const inPlay = allocation.items.filter((item) => item.perPlayer > 0).map((item) => item.denomination);
-  state.structure = buildAutomaticStructure(state.startingStack, state.autoHours, state.anteEnabled, state.chipDenominations, inPlay);
+  state.structure = buildAutomaticStructure(state.startingStack, state.autoHours, state.anteEnabled, state.chipDenominations, inPlay, state.playerCount);
   resetTournamentProgress();
   saveState();
   renderSchedule();
@@ -1136,7 +1214,7 @@ function initialize() {
   renderPlayers();
   initializeTelegram();
   setInterval(timerTick, 250);
-  if ("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js?v=8");
+  if ("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js?v=9");
 }
 
 initialize();
