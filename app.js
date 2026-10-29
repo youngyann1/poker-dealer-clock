@@ -19,7 +19,17 @@ const BASE_BLIND_LEVELS = [
   [600, 1200],
   [800, 1600],
   [1000, 2000],
-  [1500, 3000]
+  [1500, 3000],
+  [2000, 4000],
+  [2500, 5000],
+  [3000, 6000],
+  [4000, 8000],
+  [5000, 10000],
+  [6000, 12000],
+  [8000, 16000],
+  [10000, 20000],
+  [12000, 24000],
+  [15000, 30000]
 ];
 const DEFAULT_CHIP_INVENTORY = [
   { denomination: 25, count: 100 },
@@ -28,7 +38,7 @@ const DEFAULT_CHIP_INVENTORY = [
   { denomination: 1000, count: 25 },
   { denomination: 5000, count: 10 }
 ];
-const AUTO_STRUCTURE_VERSION = 4;
+const AUTO_STRUCTURE_VERSION = 5;
 
 function normalizeChipDenominations(value) {
   const source = Array.isArray(value) ? value : String(value || "").match(/\d+/g) || [];
@@ -127,6 +137,15 @@ function chipUnitForTarget(targetBb, chips) {
   return options[options.length - 1] || chips[0];
 }
 
+function chipUnitForPair(targetSb, targetBb, chips) {
+  const exact = chips.filter((chip) => {
+    const sbUnits = targetSb / chip;
+    const bbUnits = targetBb / chip;
+    return Math.abs(sbUnits - Math.round(sbUnits)) < 1e-9 && Math.abs(bbUnits - Math.round(bbUnits)) < 1e-9;
+  });
+  return exact[exact.length - 1] || chipUnitForTarget(targetBb, chips);
+}
+
 function requiredUnitForLevels(levels, chips) {
   const amounts = levels.flatMap((stage) => [stage.sb, stage.bb, stage.ante].filter((amount) => amount > 0));
   const options = chips.filter((chip) => amounts.every((amount) => amount % chip === 0));
@@ -167,10 +186,11 @@ function buildAutomaticStructure(startingStack, hours, anteEnabled = false, chip
   const chips = normalizeChipDenominations(chipDenominations);
   const smallestChip = chips[0];
   const scale = Math.max(stack / BASE_STARTING_STACK, smallestChip / 25);
-  const levels = BASE_BLIND_LEVELS.map(([baseSb, baseBb]) => {
+  const levelCount = selectedHours * 4;
+  const levels = BASE_BLIND_LEVELS.slice(0, levelCount).map(([baseSb, baseBb]) => {
     const targetSb = baseSb * scale;
     const targetBb = baseBb * scale;
-    const unit = chipUnitForTarget(targetBb, chips);
+    const unit = chipUnitForPair(targetSb, targetBb, chips);
     let sb = Math.max(unit, Math.round(targetSb / unit) * unit);
     let bb = Math.max(unit, Math.round(targetBb / unit) * unit);
     if (baseSb === baseBb) sb = bb;
@@ -178,22 +198,10 @@ function buildAutomaticStructure(startingStack, hours, anteEnabled = false, chip
     return { sb, bb };
   });
   const stages = [];
-  const minimumPerHour = Math.floor(levels.length / selectedHours);
-  const hoursWithExtraLevel = levels.length % selectedHours;
-  let levelIndex = 0;
-
-  for (let hour = 0; hour < selectedHours; hour += 1) {
-    const levelsThisHour = minimumPerHour + (hour < hoursWithExtraLevel ? 1 : 0);
-    const baseDuration = Math.floor(60 / levelsThisHour);
-    const longerLevels = 60 % levelsThisHour;
-    for (let position = 0; position < levelsThisHour; position += 1) {
-      const level = levels[levelIndex];
-      const duration = baseDuration + (position < longerLevels ? 1 : 0);
-      stages.push({ type: "level", duration, sb: level.sb, bb: level.bb, ante: anteEnabled ? level.bb : 0 });
-      levelIndex += 1;
-    }
-    if (hour < selectedHours - 1) stages.push({ type: "break", duration: 10 });
-  }
+  levels.forEach((level, index) => {
+    stages.push({ type: "level", duration: 15, sb: level.sb, bb: level.bb, ante: anteEnabled ? level.bb : 0 });
+    if ((index + 1) % 4 === 0 && index < levels.length - 1) stages.push({ type: "break", duration: 10 });
+  });
 
   return annotateChipChanges(stages, chips, stack, initialInPlay);
 }
@@ -1128,7 +1136,7 @@ function initialize() {
   renderPlayers();
   initializeTelegram();
   setInterval(timerTick, 250);
-  if ("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js?v=7");
+  if ("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js?v=8");
 }
 
 initialize();
