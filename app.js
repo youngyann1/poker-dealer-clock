@@ -1102,7 +1102,7 @@ function initialize() {
   renderPlayers();
   initializeTelegram();
   setInterval(timerTick, 250);
-  if ("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js");
+  if ("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js?v=6");
 }
 
 initialize();
