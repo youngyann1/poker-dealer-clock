@@ -1,4 +1,4 @@
-const CACHE = "poker-clock-v2";
+const CACHE = "poker-clock-v5";
 const ASSETS = ["./", "./index.html", "./styles.css", "./app.js", "./manifest.webmanifest", "./icon.svg"];
 
 self.addEventListener("install", (event) => {
@@ -19,3 +19,4 @@ self.addEventListener("fetch", (event) => {
     return response;
   }).catch(() => caches.match(event.request).then((cached) => cached || caches.match("./index.html"))));
 });
+

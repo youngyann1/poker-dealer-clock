@@ -24,9 +24,6 @@
         </div>
         <div class="topbar-actions">
           <span class="sync-badge" id="telegramStatus" hidden>Telegram</span>
-          <button class="icon-button" id="soundButton" type="button" aria-label="Звук включён" title="Включить или выключить звук">
-            <span aria-hidden="true">♪</span>
-          </button>
         </div>
       </header>
 
@@ -49,6 +46,12 @@
               <p class="ante" id="currentAnte">без анте</p>
             </div>
           </article>
+
+          <div class="break-action" id="breakChipNotice" hidden>
+            <p class="caption">ФИШКИ НА ЭТОМ ПЕРЕРЫВЕ</p>
+            <strong id="breakChipTitle">Состав без изменений</strong>
+            <span id="breakChipText">Новые номиналы пока не нужны.</span>
+          </div>
 
           <div class="next-card">
             <div>
@@ -84,20 +87,80 @@
               <p class="eyebrow">НАСТРОЙКА ТУРНИРА</p>
               <h2>Структура</h2>
             </div>
-            <button class="mini-button" id="resetStructure" type="button">По умолчанию</button>
+            <button class="mini-button" id="resetStructure" type="button">Сбросить</button>
+          </div>
+
+          <div class="mode-card">
+            <span class="mode-label">Способ настройки</span>
+            <div class="mode-grid" aria-label="Способ настройки структуры">
+              <button class="mode-button is-active" data-structure-mode="auto" type="button">Авто</button>
+              <button class="mode-button" data-structure-mode="manual" type="button">Вручную</button>
+            </div>
           </div>
 
           <div class="settings-card">
-            <label class="field-label" for="startingStack">Стартовый стек</label>
-            <input class="field-input" id="startingStack" inputmode="numeric" type="number" min="1" step="100" value="3000" />
+            <div class="settings-grid">
+              <div>
+                <label class="field-label" for="startingStack">Стартовый стек игрока</label>
+                <input class="field-input" id="startingStack" inputmode="numeric" type="number" min="100" step="100" value="3000" />
+              </div>
+              <div>
+                <label class="field-label" for="playerCount">Количество игроков</label>
+                <input class="field-input" id="playerCount" inputmode="numeric" type="number" min="2" max="100" step="1" value="8" />
+              </div>
+            </div>
+            <p class="field-hint" id="stackHint">В режиме «Авто» изменение стека сразу пересчитает всю структуру.</p>
+          </div>
+
+          <div class="preset-card mode-panel" id="autoControls">
+            <div class="preset-copy">
+              <span>Автоматический расчёт</span>
+              <strong id="autoSummary">Стек 3 000 · 4 часа</strong>
+            </div>
+            <div class="preset-grid" aria-label="Длительность автоматической структуры">
+              <button class="preset-button" data-auto-hours="3" type="button">3 часа</button>
+              <button class="preset-button is-active" data-auto-hours="4" type="button">4 часа</button>
+              <button class="preset-button" data-auto-hours="5" type="button">5 часов</button>
+              <button class="preset-button" data-auto-hours="6" type="button">6 часов</button>
+            </div>
+            <p class="preset-note">Выбранное время — только игровые уровни. После каждого часа игры добавляется отдельный перерыв на 10 минут.</p>
+          </div>
+
+          <div class="settings-card">
+            <div class="inventory-heading">
+              <div>
+                <span class="field-label">Фишки в наборе</span>
+                <p class="field-hint">Укажите номинал и общее количество фишек.</p>
+              </div>
+              <button class="mini-button" id="addChipDenomination" type="button">+ Номинал</button>
+            </div>
+            <div class="inventory-head" aria-hidden="true"><span>Номинал</span><span>Количество</span><span></span></div>
+            <div class="inventory-rows" id="chipInventoryRows"></div>
+            <div class="chip-plan" id="initialChipPlan"></div>
+            <div class="allocation-result" id="allocationResult"></div>
+          </div>
+
+          <div class="info-card mode-panel" id="manualControls" hidden>
+            Ручной режим разблокирует все поля ниже. Можно менять блайнды и длительность каждого уровня, а также добавлять уровни и перерывы.
+          </div>
+
+          <div class="preset-card ante-card">
+            <div class="preset-copy compact-copy">
+              <span>Анте для всей структуры</span>
+              <strong>Всегда равно ББ</strong>
+            </div>
+            <div class="ante-mode" aria-label="Режим анте">
+              <button class="ante-button is-active" data-ante-mode="off" type="button">Без анте</button>
+              <button class="ante-button" data-ante-mode="on" type="button">Анте = ББ</button>
+            </div>
           </div>
 
           <div class="schedule" id="scheduleList"></div>
-          <div class="add-row">
+          <div class="add-row" id="manualAddRow" hidden>
             <button class="outline-button" id="addLevel" type="button">+ Уровень</button>
             <button class="outline-button" id="addBreak" type="button">+ Перерыв</button>
           </div>
-          <p class="helper">Изменения сохраняются на этом устройстве автоматически. Текущий уровень не переключается.</p>
+          <p class="helper">Структура и таймер сохраняются автоматически. Подсказки по замене фишек появятся внутри соответствующих перерывов.</p>
         </section>
 
         <section class="view" id="allinView" data-view="allin" aria-labelledby="allinTab">
@@ -110,14 +173,28 @@
           </div>
 
           <div class="info-card">
-            Введите, сколько каждый игрок уже вложил в эту раздачу. Игрок в фолде участвует деньгами в банке, но не может его выиграть.
+            Введите только банк, который уже лежал в центре, и новые ставки участников. Все добавленные участники по умолчанию в игре — фолд отмечайте только при необходимости.
           </div>
 
-          <div class="players-table">
-            <div class="player-head" aria-hidden="true"><span>Игрок</span><span>Вложил</span><span>В игре</span><span></span></div>
+          <div class="settings-card prior-pot-card">
+            <label class="field-label" for="priorPot">Банк до этой серии ставок</label>
+            <div class="amount-field-wrap">
+              <input class="field-input" id="priorPot" inputmode="numeric" type="number" min="0" step="50" placeholder="Например, 1 200" />
+              <span>фишек</span>
+            </div>
+            <p class="field-hint">Например, всё, что уже накопилось к терну до олл-инов.</p>
+          </div>
+
+          <div class="empty-allin" id="emptyAllin">
+            <strong>Участников пока нет</strong>
+            <span>Добавьте только тех, кто внёс фишки в текущей серии ставок.</span>
+          </div>
+
+          <div class="players-table" id="playersTable" hidden>
+            <div class="player-head" aria-hidden="true"><span>Участник</span><span>Поставил сейчас</span><span>Статус</span><span></span></div>
             <div id="playerRows"></div>
           </div>
-          <button class="outline-button full" id="addPlayer" type="button">+ Добавить игрока</button>
+          <button class="outline-button full" id="addPlayer" type="button">+ Добавить участника</button>
           <button class="calculate-button" id="calculatePots" type="button">Рассчитать банки</button>
 
           <div class="calculation-results" id="calculationResults" aria-live="polite"></div>
@@ -141,3 +218,4 @@
     <script src="./app.js"></script>
   </body>
 </html>
+

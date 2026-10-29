@@ -3,39 +3,211 @@ const TELEGRAM_STORAGE_KEY = "poker_clock_state_v2";
 const telegramSdk = window.Telegram?.WebApp || null;
 const telegram = telegramSdk && (telegramSdk.initData || (telegramSdk.platform && telegramSdk.platform !== "unknown")) ? telegramSdk : null;
 
-const defaultStructure = [
-  { type: "level", duration: 15, sb: 25, bb: 50, ante: 0 },
-  { type: "level", duration: 15, sb: 50, bb: 100, ante: 0 },
-  { type: "level", duration: 15, sb: 75, bb: 150, ante: 0 },
-  { type: "break", duration: 10 },
-  { type: "level", duration: 15, sb: 100, bb: 200, ante: 25 },
-  { type: "level", duration: 15, sb: 150, bb: 300, ante: 50 },
-  { type: "level", duration: 15, sb: 200, bb: 400, ante: 50 },
-  { type: "break", duration: 10 },
-  { type: "level", duration: 15, sb: 300, bb: 600, ante: 100 },
-  { type: "level", duration: 15, sb: 400, bb: 800, ante: 100 },
-  { type: "level", duration: 15, sb: 600, bb: 1200, ante: 200 }
+const DEFAULT_CHIPS = [25, 100, 500, 1000, 5000];
+const DEFAULT_CHIP_INVENTORY = [
+  { denomination: 25, count: 100 },
+  { denomination: 100, count: 100 },
+  { denomination: 500, count: 50 },
+  { denomination: 1000, count: 25 },
+  { denomination: 5000, count: 10 }
 ];
+const AUTO_STRUCTURE_VERSION = 3;
 
-const defaultPlayers = [
-  { id: crypto.randomUUID(), name: "Игрок 1", amount: 500, active: true },
-  { id: crypto.randomUUID(), name: "Игрок 2", amount: 1000, active: true },
-  { id: crypto.randomUUID(), name: "Игрок 3", amount: 2000, active: true },
-  { id: crypto.randomUUID(), name: "Игрок 4", amount: 2000, active: true }
-];
+function normalizeChipDenominations(value) {
+  const source = Array.isArray(value) ? value : String(value || "").match(/\d+/g) || [];
+  const chips = [...new Set(source.map(Number).filter((item) => Number.isFinite(item) && item > 0))].sort((a, b) => a - b);
+  return chips.length ? chips : [...DEFAULT_CHIPS];
+}
+
+function normalizeChipInventory(value, legacyDenominations) {
+  const source = Array.isArray(value) && value.length
+    ? value
+    : Array.isArray(legacyDenominations) && legacyDenominations.length
+      ? normalizeChipDenominations(legacyDenominations).map((denomination) => ({ denomination, count: 50 }))
+      : structuredClone(DEFAULT_CHIP_INVENTORY);
+  const merged = new Map();
+  source.forEach((item) => {
+    const rawDenomination = Number(item?.denomination ?? item?.value ?? item);
+    if (!Number.isFinite(rawDenomination) || rawDenomination <= 0) return;
+    const denomination = Math.floor(rawDenomination);
+    const count = Math.max(0, Math.floor(Number(item?.count) || 0));
+    if (denomination) merged.set(denomination, (merged.get(denomination) || 0) + count);
+  });
+  const inventory = [...merged].map(([denomination, count]) => ({ denomination, count })).sort((a, b) => a.denomination - b.denomination);
+  return inventory.length ? inventory : structuredClone(DEFAULT_CHIP_INVENTORY);
+}
+
+function availableChipDenominations(inventory) {
+  const available = inventory.filter((item) => item.count > 0).map((item) => item.denomination);
+  return available.length ? available : inventory.map((item) => item.denomination);
+}
+
+function gcd(a, b) {
+  let left = Math.abs(Number(a) || 0);
+  let right = Math.abs(Number(b) || 0);
+  while (right) [left, right] = [right, left % right];
+  return left;
+}
+
+function allocationUtility(rank, quantity, denominationCount) {
+  const desired = [10, 8, 4, 2][rank] || 0;
+  const useful = Math.min(quantity, desired) * (denominationCount - rank) * 25;
+  const excess = Math.max(0, quantity - desired) * 3;
+  const reservePenalty = rank >= Math.max(2, denominationCount - 2) ? quantity * 45 : 0;
+  return useful - excess - reservePenalty;
+}
+
+function calculateStartingAllocation(startingStack, playerCount, inventory) {
+  const stack = Math.max(1, Math.floor(Number(startingStack) || 0));
+  const players = Math.max(1, Math.floor(Number(playerCount) || 1));
+  const chips = normalizeChipInventory(inventory);
+  const unit = chips.reduce((current, item) => gcd(current, item.denomination), 0) || 1;
+  const divisible = stack % unit === 0;
+  const target = Math.floor(stack / unit);
+  let states = new Map([[0, { score: 0, counts: [] }]]);
+
+  chips.forEach((chip, rank) => {
+    const value = chip.denomination / unit;
+    const cap = Math.min(Math.floor(chip.count / players), Math.floor(stack / chip.denomination));
+    const previous = [...states.entries()];
+    const next = new Map(states);
+    previous.forEach(([amount, candidate]) => {
+      for (let quantity = 1; quantity <= cap; quantity += 1) {
+        const nextAmount = amount + value * quantity;
+        if (nextAmount > target) break;
+        const score = candidate.score + allocationUtility(rank, quantity, chips.length);
+        const existing = next.get(nextAmount);
+        if (!existing || score > existing.score) {
+          const counts = [...candidate.counts];
+          counts[rank] = quantity;
+          next.set(nextAmount, { score, counts });
+        }
+      }
+    });
+    states = next;
+  });
+
+  const exact = divisible && states.has(target);
+  const reached = exact ? target : Math.max(...states.keys());
+  const winner = states.get(reached) || { counts: [] };
+  const items = chips.map((chip, index) => {
+    const perPlayer = winner.counts[index] || 0;
+    const issued = perPlayer * players;
+    return { ...chip, perPlayer, issued, reserve: chip.count - issued };
+  });
+  return {
+    exact,
+    stackPerPlayer: reached * unit,
+    shortfall: Math.max(0, stack - reached * unit),
+    items,
+    totalIssued: reached * unit * players,
+    reserveValue: items.reduce((sum, item) => sum + item.reserve * item.denomination, 0)
+  };
+}
+
+function chipUnitForTarget(targetBb, chips) {
+  const options = chips.filter((chip) => chip <= targetBb / 4);
+  return options[options.length - 1] || chips[0];
+}
+
+function requiredUnitForLevels(levels, chips) {
+  const amounts = levels.flatMap((stage) => [stage.sb, stage.bb, stage.ante].filter((amount) => amount > 0));
+  const options = chips.filter((chip) => amounts.every((amount) => amount % chip === 0));
+  return options[options.length - 1] || chips[0];
+}
+
+function usefulChipsForBlock(levels, chips, startingStack = 0) {
+  const maxBb = Math.max(...levels.map((stage) => Number(stage.bb) || 0), chips[0]);
+  const usefulLimit = Math.max(maxBb * 4, startingStack / 6);
+  return chips.filter((chip) => chip <= usefulLimit);
+}
+
+function annotateChipChanges(stages, chips, startingStack, initialInPlay = null) {
+  const firstBreakIndex = stages.findIndex((stage) => stage.type === "break");
+  const firstBlock = stages.slice(0, firstBreakIndex < 0 ? stages.length : firstBreakIndex).filter((stage) => stage.type === "level");
+  let inPlay = new Set(initialInPlay?.length ? initialInPlay : usefulChipsForBlock(firstBlock, chips, startingStack));
+
+  stages.forEach((stage, index) => {
+    if (stage.type !== "break") return;
+    const nextBreakOffset = stages.slice(index + 1).findIndex((item) => item.type === "break");
+    const blockEnd = nextBreakOffset < 0 ? stages.length : index + 1 + nextBreakOffset;
+    const nextBlock = stages.slice(index + 1, blockEnd).filter((item) => item.type === "level");
+    const requiredUnit = requiredUnitForLevels(nextBlock, chips);
+    const chipOut = [...inPlay].filter((chip) => chip < requiredUnit);
+    chipOut.forEach((chip) => inPlay.delete(chip));
+    const useful = usefulChipsForBlock(nextBlock, chips);
+    const chipIn = useful.filter((chip) => chip >= requiredUnit && !inPlay.has(chip));
+    chipIn.forEach((chip) => inPlay.add(chip));
+    stage.chipOut = chipOut;
+    stage.chipIn = chipIn;
+  });
+  return stages;
+}
+
+function buildAutomaticStructure(startingStack, hours, anteEnabled = false, chipDenominations = DEFAULT_CHIPS, initialInPlay = null) {
+  const stack = Math.max(100, Number(startingStack) || 3000);
+  const selectedHours = Math.min(6, Math.max(3, Number(hours) || 4));
+  const chips = normalizeChipDenominations(chipDenominations);
+  const levelCount = selectedHours * 4;
+  const levelDuration = selectedHours * 60 / levelCount;
+  const smallestChip = chips[0];
+  const firstUnit = chipUnitForTarget(Math.max(smallestChip * 2, stack / 60), chips);
+  const firstBb = Math.max(smallestChip * 2, Math.round((stack / 60) / firstUnit) * firstUnit);
+  const finalTarget = Math.max(firstBb * 2, stack * 2);
+  const ratio = Math.pow(finalTarget / firstBb, 1 / Math.max(1, levelCount - 1));
+  const stages = [];
+  let previousBb = 0;
+
+  for (let index = 0; index < levelCount; index += 1) {
+    const targetBb = index === levelCount - 1 ? finalTarget : firstBb * Math.pow(ratio, index);
+    const unit = chipUnitForTarget(targetBb, chips);
+    let bb = Math.max(unit * 2, Math.round(targetBb / unit) * unit);
+    if (bb <= previousBb) bb = Math.ceil((previousBb + unit) / unit) * unit;
+    const sb = Math.max(unit, Math.floor((bb / 2) / unit) * unit);
+    stages.push({ type: "level", duration: levelDuration, sb, bb, ante: anteEnabled ? bb : 0 });
+    previousBb = bb;
+    if ((index + 1) % 4 === 0 && index < levelCount - 1) stages.push({ type: "break", duration: 10 });
+  }
+
+  return annotateChipChanges(stages, chips, stack, initialInPlay);
+}
 
 const saved = loadState();
+const initialAnteEnabled = typeof saved.anteEnabled === "boolean" ? saved.anteEnabled : false;
+const initialChipInventory = normalizeChipInventory(saved.chipInventory, saved.chipDenominations);
+const initialChipDenominations = availableChipDenominations(initialChipInventory);
+const initialPlayerCount = Math.max(2, Math.floor(Number(saved.playerCount) || 8));
+const initialAutoHours = [3, 4, 5, 6].includes(Number(saved.autoHours)) ? Number(saved.autoHours) : 4;
+const initialStartingStack = Number(saved.startingStack) || 3000;
+const initialAllocation = calculateStartingAllocation(initialStartingStack, initialPlayerCount, initialChipInventory);
+const initialInPlay = initialAllocation.items.filter((item) => item.perPlayer > 0).map((item) => item.denomination);
+const initialMode = saved.structureMode === "manual" ? "manual" : "auto";
+const canRestoreStructure = Array.isArray(saved.structure) && saved.structure.length && (initialMode === "manual" || Number(saved.autoStructureVersion) === AUTO_STRUCTURE_VERSION);
+const initialStructure = canRestoreStructure
+  ? saved.structure
+  : buildAutomaticStructure(initialStartingStack, initialAutoHours, initialAnteEnabled, initialChipDenominations, initialInPlay);
+initialStructure.forEach((stage) => {
+  if (stage.type === "level") stage.ante = initialAnteEnabled ? Number(stage.bb) || 0 : 0;
+});
+const defaultStructure = buildAutomaticStructure(3000, 4, false, DEFAULT_CHIPS);
 const state = {
-  structure: Array.isArray(saved.structure) && saved.structure.length ? saved.structure : structuredClone(defaultStructure),
-  startingStack: Number(saved.startingStack) || 3000,
-  levelIndex: Math.min(Number(saved.levelIndex) || 0, Math.max(0, (saved.structure || defaultStructure).length - 1)),
-  remainingMs: Number.isFinite(Number(saved.remainingMs)) ? Math.max(0, Number(saved.remainingMs)) : 15 * 60_000,
-  running: Boolean(saved.running),
-  endsAt: Number(saved.endsAt) || null,
-  tournamentStartedAt: Number(saved.tournamentStartedAt) || null,
-  elapsedBeforeStart: Number(saved.elapsedBeforeStart) || 0,
-  sound: saved.sound !== false,
-  players: Array.isArray(saved.players) && saved.players.length ? saved.players : defaultPlayers,
+  structure: initialStructure,
+  structureMode: initialMode,
+  autoStructureVersion: AUTO_STRUCTURE_VERSION,
+  autoHours: initialAutoHours,
+  anteEnabled: initialAnteEnabled,
+  chipInventory: initialChipInventory,
+  chipDenominations: initialChipDenominations,
+  playerCount: initialPlayerCount,
+  startingStack: initialStartingStack,
+  levelIndex: canRestoreStructure ? Math.min(Number(saved.levelIndex) || 0, Math.max(0, initialStructure.length - 1)) : 0,
+  remainingMs: canRestoreStructure && Number.isFinite(Number(saved.remainingMs)) ? Math.max(0, Number(saved.remainingMs)) : Math.max(1, Number(initialStructure[0]?.duration) || 20) * 60_000,
+  running: canRestoreStructure && Boolean(saved.running),
+  endsAt: canRestoreStructure ? Number(saved.endsAt) || null : null,
+  tournamentStartedAt: canRestoreStructure ? Number(saved.tournamentStartedAt) || null : null,
+  elapsedBeforeStart: canRestoreStructure ? Number(saved.elapsedBeforeStart) || 0 : 0,
+  players: [],
+  priorPot: 0,
   savedAt: Number(saved.savedAt) || 0,
   potWinners: {}
 };
@@ -59,6 +231,13 @@ function loadState() {
 function stateSnapshot() {
   return {
     structure: state.structure,
+    structureMode: state.structureMode,
+    autoStructureVersion: state.autoStructureVersion,
+    autoHours: state.autoHours,
+    anteEnabled: state.anteEnabled,
+    chipInventory: state.chipInventory,
+    chipDenominations: state.chipDenominations,
+    playerCount: state.playerCount,
     startingStack: state.startingStack,
     levelIndex: state.levelIndex,
     remainingMs: state.remainingMs,
@@ -66,8 +245,6 @@ function stateSnapshot() {
     endsAt: state.endsAt,
     tournamentStartedAt: state.tournamentStartedAt,
     elapsedBeforeStart: state.elapsedBeforeStart,
-    sound: state.sound,
-    players: state.players,
     savedAt: state.savedAt
   };
 }
@@ -149,16 +326,29 @@ function parseStoredSnapshot(value) {
 
 function applyStoredSnapshot(snapshot) {
   if (!snapshot) return false;
-  state.structure = snapshot.structure;
+  state.structureMode = snapshot.structureMode === "manual" ? "manual" : "auto";
+  state.autoStructureVersion = AUTO_STRUCTURE_VERSION;
+  state.autoHours = [3, 4, 5, 6].includes(Number(snapshot.autoHours)) ? Number(snapshot.autoHours) : 4;
+  state.anteEnabled = typeof snapshot.anteEnabled === "boolean" ? snapshot.anteEnabled : false;
+  state.chipInventory = normalizeChipInventory(snapshot.chipInventory, snapshot.chipDenominations);
+  state.chipDenominations = availableChipDenominations(state.chipInventory);
+  state.playerCount = Math.max(2, Math.floor(Number(snapshot.playerCount) || 8));
   state.startingStack = Number(snapshot.startingStack) || 3000;
-  state.levelIndex = clamp(Number(snapshot.levelIndex) || 0, 0, state.structure.length - 1);
-  state.remainingMs = Math.max(0, Number(snapshot.remainingMs) || 0);
-  state.running = Boolean(snapshot.running);
-  state.endsAt = Number(snapshot.endsAt) || null;
-  state.tournamentStartedAt = Number(snapshot.tournamentStartedAt) || null;
-  state.elapsedBeforeStart = Number(snapshot.elapsedBeforeStart) || 0;
-  state.sound = snapshot.sound !== false;
-  state.players = Array.isArray(snapshot.players) && snapshot.players.length ? snapshot.players : state.players;
+  const allocation = calculateStartingAllocation(state.startingStack, state.playerCount, state.chipInventory);
+  const inPlay = allocation.items.filter((item) => item.perPlayer > 0).map((item) => item.denomination);
+  const restoreStructure = state.structureMode === "manual" || Number(snapshot.autoStructureVersion) === AUTO_STRUCTURE_VERSION;
+  state.structure = restoreStructure
+    ? snapshot.structure
+    : buildAutomaticStructure(state.startingStack, state.autoHours, state.anteEnabled, state.chipDenominations, inPlay);
+  state.structure.forEach((stage) => {
+    if (stage.type === "level") stage.ante = state.anteEnabled ? Number(stage.bb) || 0 : 0;
+  });
+  state.levelIndex = restoreStructure ? clamp(Number(snapshot.levelIndex) || 0, 0, state.structure.length - 1) : 0;
+  state.remainingMs = restoreStructure ? Math.max(0, Number(snapshot.remainingMs) || 0) : stageDurationMs();
+  state.running = restoreStructure && Boolean(snapshot.running);
+  state.endsAt = restoreStructure ? Number(snapshot.endsAt) || null : null;
+  state.tournamentStartedAt = restoreStructure ? Number(snapshot.tournamentStartedAt) || null : null;
+  state.elapsedBeforeStart = restoreStructure ? Number(snapshot.elapsedBeforeStart) || 0 : 0;
   state.savedAt = Number(snapshot.savedAt) || 0;
   return true;
 }
@@ -283,6 +473,15 @@ function renderClock() {
     $("#currentBlinds").textContent = `${formatNumber(stage.sb)} / ${formatNumber(stage.bb)}`;
     $("#currentAnte").textContent = stage.ante ? `анте ${formatNumber(stage.ante)}` : "без анте";
   }
+  const showChipNotice = isBreak && state.structureMode === "auto";
+  $("#breakChipNotice").hidden = !showChipNotice;
+  if (showChipNotice) {
+    const actions = [];
+    if (stage.chipOut?.length) actions.push(`вывести ${formatChipList(stage.chipOut)}`);
+    if (stage.chipIn?.length) actions.push(`ввести ${formatChipList(stage.chipIn)}`);
+    $("#breakChipTitle").textContent = actions.length ? "Пора обновить набор фишек" : "Состав фишек без изменений";
+    $("#breakChipText").textContent = actions.length ? `${actions.join("; ")}.` : "На этом перерыве ничего выводить или вводить не нужно.";
+  }
   if (!next) {
     $("#nextBlinds").textContent = "Конец турнира";
     $("#nextMeta").textContent = "Последний уровень структуры";
@@ -297,8 +496,6 @@ function renderClock() {
   $("#playButton").setAttribute("aria-label", state.running ? "Поставить таймер на паузу" : "Запустить таймер");
   $("#startingStackDisplay").textContent = formatNumber(state.startingStack);
   $("#elapsedTime").textContent = formatElapsed(getElapsedMs());
-  $("#soundButton").classList.toggle("is-muted", !state.sound);
-  $("#soundButton").setAttribute("aria-label", state.sound ? "Звук включён" : "Звук выключен");
 }
 
 function pluralMinutes(value) {
@@ -393,7 +590,7 @@ function timerTick() {
         showToast("Структура завершена");
       }
     } else if (Math.floor(before / 1000) !== Math.floor(state.remainingMs / 1000)) {
-      if (state.sound && state.remainingMs <= 10_000 && state.remainingMs > 0) playTick();
+      if (state.remainingMs <= 10_000 && state.remainingMs > 0) playTick();
     }
   }
   renderClock();
@@ -405,7 +602,6 @@ function unlockAudio() {
 }
 
 function tone(frequency, duration, gain = 0.08, delay = 0) {
-  if (!state.sound) return;
   unlockAudio();
   const osc = audioContext.createOscillator();
   const volume = audioContext.createGain();
@@ -441,46 +637,119 @@ function releaseWakeLock() {
 function renderSchedule() {
   const container = $("#scheduleList");
   container.innerHTML = "";
+  const editable = state.structureMode === "manual";
   let levelNumber = 0;
   state.structure.forEach((stage, index) => {
     if (stage.type === "level") levelNumber += 1;
     const item = document.createElement("div");
     item.className = `schedule-item${stage.type === "break" ? " is-break" : ""}`;
     if (stage.type === "break") {
+      const chipNotes = state.structureMode === "auto" ? `
+        <div class="break-chip-note">
+          <strong>Замена фишек</strong>
+          <span>${stage.chipOut?.length ? `Вывести: ${formatChipList(stage.chipOut)}.` : "Ничего не выводить."} ${stage.chipIn?.length ? `Ввести: ${formatChipList(stage.chipIn)}.` : "Новые номиналы не нужны."}</span>
+        </div>` : "";
       item.innerHTML = `
         <div class="schedule-number">☕</div>
         <div class="break-label">Перерыв</div>
         ${compactField("Мин", stage.duration, "duration", index)}
-        <button class="delete-button" data-delete-stage="${index}" type="button" aria-label="Удалить перерыв">×</button>`;
+        <button class="delete-button" data-delete-stage="${index}" type="button" aria-label="Удалить перерыв" ${editable ? "" : "disabled"}>×</button>
+        ${chipNotes}`;
     } else {
       item.innerHTML = `
         <div class="schedule-number">${levelNumber}</div>
         ${compactField("SB", stage.sb, "sb", index)}
         ${compactField("BB", stage.bb, "bb", index)}
-        ${compactField("Анте", stage.ante, "ante", index)}
-        <button class="delete-button" data-delete-stage="${index}" type="button" aria-label="Удалить уровень">×</button>
-        <div></div>${compactField("Минут", stage.duration, "duration", index)}<div></div><div></div><div></div>`;
+        ${compactField("Минут", stage.duration, "duration", index)}
+        <button class="delete-button" data-delete-stage="${index}" type="button" aria-label="Удалить уровень" ${editable ? "" : "disabled"}>×</button>
+        <div class="schedule-ante">${state.anteEnabled ? `Анте автоматически: ${formatNumber(stage.bb)}` : "Без анте"}</div>`;
     }
     container.appendChild(item);
   });
   $("#startingStack").value = state.startingStack;
+  $("#playerCount").value = state.playerCount;
+  $$('[data-structure-mode]').forEach((button) => button.classList.toggle("is-active", button.dataset.structureMode === state.structureMode));
+  $$('[data-auto-hours]').forEach((button) => button.classList.toggle("is-active", Number(button.dataset.autoHours) === state.autoHours));
+  $$('[data-ante-mode]').forEach((button) => button.classList.toggle("is-active", (button.dataset.anteMode === "on") === state.anteEnabled));
+  $("#autoControls").hidden = state.structureMode !== "auto";
+  $("#manualControls").hidden = state.structureMode !== "manual";
+  $("#manualAddRow").hidden = state.structureMode !== "manual";
+  $("#stackHint").textContent = state.structureMode === "auto"
+    ? "Изменение стека сразу пересчитает всю структуру."
+    : "Стек сохраняется для справки; уровни в ручном режиме не пересчитываются.";
+  const gameMinutes = state.structure.filter((stage) => stage.type === "level").reduce((sum, stage) => sum + Math.max(0, Number(stage.duration) || 0), 0);
+  const breakMinutes = state.structure.filter((stage) => stage.type === "break").reduce((sum, stage) => sum + Math.max(0, Number(stage.duration) || 0), 0);
+  $("#autoSummary").textContent = `Стек ${formatNumber(state.startingStack)} · ${formatDurationWords(gameMinutes)} игры${breakMinutes ? ` + ${breakMinutes} мин перерывов` : ""}`;
+  renderChipInventory();
+}
+
+function renderChipInventory() {
+  const rows = $("#chipInventoryRows");
+  rows.innerHTML = state.chipInventory.map((item, index) => `
+    <div class="inventory-row">
+      <input class="field-input" type="number" min="1" inputmode="numeric" value="${item.denomination}" aria-label="Номинал фишки" data-chip-denomination="${index}" />
+      <input class="field-input" type="number" min="0" inputmode="numeric" value="${item.count}" aria-label="Количество фишек" data-chip-count="${index}" />
+      <button class="inventory-remove" type="button" data-remove-chip="${index}" aria-label="Удалить номинал">×</button>
+    </div>`).join("");
+
+  const allocation = calculateStartingAllocation(state.startingStack, state.playerCount, state.chipInventory);
+  const used = allocation.items.filter((item) => item.perPlayer > 0);
+  const piecesPerPlayer = allocation.items.reduce((sum, item) => sum + item.perPlayer, 0);
+  $("#initialChipPlan").textContent = allocation.exact
+    ? `На старте используются номиналы: ${formatChipList(used.map((item) => item.denomination))}. Крупные неиспользованные фишки остаются в резерве для перерывов.`
+    : `Из этого набора нельзя собрать каждому ровно ${formatNumber(state.startingStack)}. Ближайший одинаковый стек: ${formatNumber(allocation.stackPerPlayer)}.`;
+
+  const result = $("#allocationResult");
+  const summary = allocation.exact
+    ? `<div class="allocation-summary"><strong>${formatNumber(state.startingStack)}</strong> каждому из ${state.playerCount} игроков · ${piecesPerPlayer} фишек на человека · всего выдать ${formatNumber(allocation.totalIssued)}</div>`
+    : `<div class="allocation-summary is-warning">Точный стек собрать нельзя: каждому получится ${formatNumber(allocation.stackPerPlayer)}, не хватает ${formatNumber(allocation.shortfall)}. Добавьте фишки или измените стек.</div>`;
+  result.innerHTML = `${summary}
+    <div class="allocation-table-head"><span>Фишка</span><span>Каждому</span><span>В резерве</span></div>
+    ${allocation.items.map((item) => `<div class="allocation-table-row"><strong>${formatNumber(item.denomination)}</strong><span>${item.perPlayer} шт.</span><span>${item.reserve} шт.</span></div>`).join("")}
+    <div class="allocation-foot">Резерв: ${formatNumber(allocation.reserveValue)} фишек по стоимости. Он остаётся у дилера для размена и ввода крупных номиналов.</div>`;
+}
+
+function formatChipList(chips) {
+  return chips.length ? chips.map(formatNumber).join(", ") : "—";
+}
+
+function pluralLevels(value) {
+  const n = Math.abs(Number(value)) % 100;
+  const n1 = n % 10;
+  if (n > 10 && n < 20) return "уровней";
+  if (n1 === 1) return "уровень";
+  if (n1 > 1 && n1 < 5) return "уровня";
+  return "уровней";
+}
+
+function formatDurationWords(totalMinutes) {
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (!hours) return `${minutes} мин`;
+  if (!minutes) return `${hours} ${hours === 1 ? "час" : hours < 5 ? "часа" : "часов"}`;
+  return `${hours} ч ${minutes} мин`;
 }
 
 function compactField(label, value, key, index) {
-  return `<div class="compact-field"><label>${label}</label><input type="number" min="0" inputmode="numeric" value="${Number(value) || 0}" data-stage-index="${index}" data-stage-key="${key}" /></div>`;
+  const disabled = state.structureMode === "manual" ? "" : "disabled";
+  return `<div class="compact-field"><label>${label}</label><input type="number" min="0" inputmode="numeric" value="${Number(value) || 0}" data-stage-index="${index}" data-stage-key="${key}" ${disabled} /></div>`;
 }
 
 function updateStage(index, key, value) {
+  if (state.structureMode !== "manual") return;
   const number = Math.max(key === "duration" ? 1 : 0, Number(value) || 0);
   state.structure[index][key] = number;
+  if (key === "bb" && state.structure[index].type === "level") state.structure[index].ante = state.anteEnabled ? number : 0;
   if (index === state.levelIndex && key === "duration" && !state.running) {
     state.remainingMs = Math.min(state.remainingMs, stageDurationMs());
   }
   saveState();
+  renderSchedule();
   renderClock();
 }
 
 function deleteStage(index) {
+  if (state.structureMode !== "manual") return;
   if (state.structure.length <= 1) return showToast("Нужен хотя бы один уровень");
   state.structure.splice(index, 1);
   if (index < state.levelIndex) state.levelIndex -= 1;
@@ -493,57 +762,104 @@ function deleteStage(index) {
 }
 
 function addStage(type) {
+  if (state.structureMode !== "manual") return;
   const previousLevel = [...state.structure].reverse().find((item) => item.type === "level") || defaultStructure[0];
   state.structure.push(type === "break"
     ? { type: "break", duration: 10 }
-    : { type: "level", duration: 15, sb: previousLevel.bb, bb: previousLevel.bb * 2, ante: previousLevel.ante });
+    : { type: "level", duration: previousLevel.duration || 20, sb: previousLevel.bb, bb: previousLevel.bb * 2, ante: state.anteEnabled ? previousLevel.bb * 2 : 0 });
   saveState();
   renderSchedule();
   requestAnimationFrame(() => window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" }));
 }
 
 function resetStructure() {
-  if (!confirm("Вернуть стандартную структуру? Текущая структура будет заменена.")) return;
-  state.structure = structuredClone(defaultStructure);
+  const message = state.structureMode === "manual"
+    ? "Заменить ручную структуру автоматической?"
+    : "Пересчитать автоматическую структуру с текущими настройками?";
+  if (!confirm(message)) return;
+  applyAutomaticStructure(state.autoHours);
+}
+
+function resetTournamentProgress() {
   state.levelIndex = 0;
   state.remainingMs = stageDurationMs();
-  if (state.running) state.endsAt = Date.now() + state.remainingMs;
+  state.running = false;
+  state.endsAt = null;
+  state.tournamentStartedAt = null;
+  state.elapsedBeforeStart = 0;
+  releaseWakeLock();
+}
+
+function applyAutomaticStructure(hours, notify = true) {
+  state.structureMode = "auto";
+  state.autoHours = Number(hours);
+  state.autoStructureVersion = AUTO_STRUCTURE_VERSION;
+  const allocation = calculateStartingAllocation(state.startingStack, state.playerCount, state.chipInventory);
+  const inPlay = allocation.items.filter((item) => item.perPlayer > 0).map((item) => item.denomination);
+  state.structure = buildAutomaticStructure(state.startingStack, state.autoHours, state.anteEnabled, state.chipDenominations, inPlay);
+  resetTournamentProgress();
   saveState();
   renderSchedule();
   renderClock();
-  showToast("Структура восстановлена");
+  updateTelegramClosingProtection();
+  if (notify) showToast(`Рассчитано: ${state.autoHours} ${state.autoHours < 5 ? "часа" : "часов"} чистой игры`);
+}
+
+function setStructureMode(mode) {
+  if (mode === "auto") return applyAutomaticStructure(state.autoHours);
+  state.structureMode = "manual";
+  saveState();
+  renderSchedule();
+  renderClock();
+  showToast("Ручное редактирование включено");
+}
+
+function setAnteMode(enabled) {
+  state.anteEnabled = Boolean(enabled);
+  state.structure.forEach((stage) => {
+    if (stage.type === "level") stage.ante = state.anteEnabled ? Number(stage.bb) || 0 : 0;
+  });
+  saveState();
+  renderSchedule();
+  renderClock();
+  showToast(state.anteEnabled ? "Анте равно большому блайнду" : "Игра без анте");
 }
 
 function renderPlayers() {
   const container = $("#playerRows");
   container.innerHTML = "";
+  $("#playersTable").hidden = state.players.length === 0;
+  $("#emptyAllin").hidden = state.players.length > 0;
   state.players.forEach((player) => {
     const row = document.createElement("div");
     row.className = "player-row";
     row.innerHTML = `
       <input class="player-input" value="${escapeHtml(player.name)}" aria-label="Имя игрока" data-player-name="${player.id}" />
-      <input class="player-input player-amount" type="number" min="0" inputmode="numeric" value="${Number(player.amount) || 0}" aria-label="Вложено в раздачу" data-player-amount="${player.id}" />
-      <label class="toggle-wrap" title="Игрок не сбросил карты"><input class="toggle" type="checkbox" ${player.active ? "checked" : ""} aria-label="Игрок в раздаче" data-player-active="${player.id}" /></label>
+      <input class="player-input player-amount" type="number" min="0" inputmode="numeric" value="${Number(player.amount) || ""}" placeholder="0" aria-label="Поставил сейчас" data-player-amount="${player.id}" />
+      <button class="fold-button ${player.active ? "" : "is-folded"}" type="button" data-player-fold="${player.id}" aria-pressed="${player.active ? "false" : "true"}">${player.active ? "В игре" : "Фолд"}</button>
       <button class="remove-player" type="button" data-remove-player="${player.id}" aria-label="Удалить игрока">×</button>`;
     container.appendChild(row);
   });
+  $("#priorPot").value = state.priorPot || "";
 }
 
 function addPlayer() {
-  state.players.push({ id: crypto.randomUUID(), name: `Игрок ${state.players.length + 1}`, amount: 0, active: true });
-  saveState();
+  const id = crypto.randomUUID();
+  state.players.push({ id, name: `Игрок ${state.players.length + 1}`, amount: 0, active: true });
   renderPlayers();
+  requestAnimationFrame(() => document.querySelector(`[data-player-amount="${id}"]`)?.focus());
 }
 
 function clearAllin() {
-  state.players = Array.from({ length: 4 }, (_, index) => ({ id: crypto.randomUUID(), name: `Игрок ${index + 1}`, amount: 0, active: true }));
+  state.players = [];
+  state.priorPot = 0;
   state.potWinners = {};
-  saveState();
   renderPlayers();
   $("#calculationResults").innerHTML = "";
 }
 
 function calculateSidePots() {
+  const priorPot = Math.max(0, Math.floor(Number(state.priorPot) || 0));
   const players = state.players
     .map((player) => ({ ...player, amount: Math.max(0, Math.floor(Number(player.amount) || 0)), name: player.name.trim() || "Без имени" }))
     .filter((player) => player.amount > 0);
@@ -572,14 +888,19 @@ function calculateSidePots() {
     previous = tier;
   });
 
-  renderPotResults(players, pots, returns, warnings);
+  if (priorPot > 0 && pots.length) {
+    pots[0].amount += priorPot;
+    pots[0].priorPot = priorPot;
+  }
+
+  renderPotResults(players, pots, returns, warnings, priorPot);
 }
 
-function renderPotResults(players, pots, returns, warnings) {
+function renderPotResults(players, pots, returns, warnings, priorPot = 0) {
   const totalCommitted = players.reduce((sum, player) => sum + player.amount, 0);
   const totalPots = pots.reduce((sum, pot) => sum + pot.amount, 0);
   const results = $("#calculationResults");
-  results.innerHTML = `<div class="summary-line"><span>Всего вложено</span><strong>${formatNumber(totalCommitted)}</strong></div>`;
+  results.innerHTML = `<div class="summary-line"><span>Всего в банках</span><strong>${formatNumber(totalPots)}</strong></div>`;
 
   warnings.forEach((warning) => results.insertAdjacentHTML("beforeend", `<div class="warning-card">${escapeHtml(warning)}</div>`));
   returns.forEach((item) => results.insertAdjacentHTML("beforeend", `<div class="return-card"><strong>${escapeHtml(item.player.name)}</strong>: вернуть недоставленную ставку <strong>${formatNumber(item.amount)}</strong></div>`));
@@ -591,7 +912,7 @@ function renderPotResults(players, pots, returns, warnings) {
     card.className = "pot-card";
     card.innerHTML = `
       <div class="pot-title"><h3>${index === 0 ? "Основной банк" : `Побочный банк ${index}`}</h3><span class="pot-amount">${formatNumber(pot.amount)}</span></div>
-      <p class="pot-note">Учитываются ставки до ${formatNumber(pot.cap)} · могут выиграть: ${pot.eligible.length ? pot.eligible.map((p) => escapeHtml(p.name)).join(", ") : "никто"}</p>
+      <p class="pot-note">${pot.priorPot ? `Включает прежний банк ${formatNumber(pot.priorPot)} · ` : ""}ставки до ${formatNumber(pot.cap)} · могут выиграть: ${pot.eligible.length ? pot.eligible.map((p) => escapeHtml(p.name)).join(", ") : "никто"}</p>
       ${pot.eligible.length ? `<div class="winner-label">Отметьте победителя или делёжку</div><div class="winner-buttons">${pot.eligible.map((player) => `<button class="winner-button ${selected.includes(player.id) ? "is-selected" : ""}" type="button" data-pot-key="${potKey}" data-winner-id="${player.id}">${escapeHtml(player.name)}</button>`).join("")}</div>` : ""}`;
     results.appendChild(card);
   });
@@ -652,6 +973,25 @@ function showToast(message) {
   toastTimer = setTimeout(() => toast.classList.remove("is-visible"), 1900);
 }
 
+function commitInventoryChange() {
+  state.chipInventory = normalizeChipInventory(state.chipInventory);
+  state.chipDenominations = availableChipDenominations(state.chipInventory);
+  if (state.structureMode === "auto") applyAutomaticStructure(state.autoHours, false);
+  else {
+    saveState();
+    renderSchedule();
+  }
+}
+
+function addChipDenomination() {
+  const used = new Set(state.chipInventory.map((item) => item.denomination));
+  const suggested = DEFAULT_CHIPS.find((denomination) => !used.has(denomination))
+    || Math.max(...state.chipDenominations, 1) * 5;
+  state.chipInventory.push({ denomination: suggested, count: 0 });
+  commitInventoryChange();
+  requestAnimationFrame(() => $("#chipInventoryRows .inventory-row:last-child input")?.focus());
+}
+
 function bindEvents() {
   $$(".nav-button").forEach((button) => button.addEventListener("click", () => showView(button.dataset.target)));
   $("#playButton").addEventListener("click", toggleTimer);
@@ -660,17 +1000,37 @@ function bindEvents() {
   $("#previousLevel").addEventListener("click", () => changeLevel(-1));
   $("#nextLevel").addEventListener("click", () => changeLevel(1));
   $("#resetLevel").addEventListener("click", resetCurrentLevel);
-  $("#soundButton").addEventListener("click", () => {
-    state.sound = !state.sound;
-    if (state.sound) { unlockAudio(); tone(660, .12, .05); }
-    saveState();
-    renderClock();
-    showToast(state.sound ? "Звук включён" : "Звук выключен");
-  });
   $("#startingStack").addEventListener("change", (event) => {
-    state.startingStack = Math.max(1, Number(event.target.value) || 3000);
-    saveState();
-    renderClock();
+    state.startingStack = Math.max(100, Number(event.target.value) || 3000);
+    if (state.structureMode === "auto") applyAutomaticStructure(state.autoHours);
+    else {
+      saveState();
+      renderSchedule();
+      renderClock();
+    }
+  });
+  $("#playerCount").addEventListener("change", (event) => {
+    state.playerCount = clamp(Math.floor(Number(event.target.value) || 8), 2, 100);
+    if (state.structureMode === "auto") applyAutomaticStructure(state.autoHours);
+    else {
+      saveState();
+      renderSchedule();
+    }
+  });
+  $("#addChipDenomination").addEventListener("click", addChipDenomination);
+  $("#chipInventoryRows").addEventListener("change", (event) => {
+    const denominationInput = event.target.closest("[data-chip-denomination]");
+    const countInput = event.target.closest("[data-chip-count]");
+    if (denominationInput) state.chipInventory[Number(denominationInput.dataset.chipDenomination)].denomination = Math.max(1, Math.floor(Number(denominationInput.value) || 1));
+    if (countInput) state.chipInventory[Number(countInput.dataset.chipCount)].count = Math.max(0, Math.floor(Number(countInput.value) || 0));
+    if (denominationInput || countInput) commitInventoryChange();
+  });
+  $("#chipInventoryRows").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-remove-chip]");
+    if (!button) return;
+    if (state.chipInventory.length <= 1) return showToast("Нужен хотя бы один номинал");
+    state.chipInventory.splice(Number(button.dataset.removeChip), 1);
+    commitInventoryChange();
   });
   $("#scheduleList").addEventListener("change", (event) => {
     const input = event.target.closest("[data-stage-index]");
@@ -683,17 +1043,31 @@ function bindEvents() {
   $("#addLevel").addEventListener("click", () => addStage("level"));
   $("#addBreak").addEventListener("click", () => addStage("break"));
   $("#resetStructure").addEventListener("click", resetStructure);
+  $$('[data-structure-mode]').forEach((button) => button.addEventListener("click", () => setStructureMode(button.dataset.structureMode)));
+  $$('[data-auto-hours]').forEach((button) => button.addEventListener("click", () => applyAutomaticStructure(Number(button.dataset.autoHours))));
+  $$('[data-ante-mode]').forEach((button) => button.addEventListener("click", () => setAnteMode(button.dataset.anteMode === "on")));
   $("#addPlayer").addEventListener("click", addPlayer);
   $("#clearAllin").addEventListener("click", clearAllin);
   $("#calculatePots").addEventListener("click", () => { state.potWinners = {}; calculateSidePots(); });
+  $("#priorPot").addEventListener("input", (event) => {
+    state.priorPot = Math.max(0, Number(event.target.value) || 0);
+    state.potWinners = {};
+  });
   $("#playerRows").addEventListener("input", updatePlayerFromInput);
   $("#playerRows").addEventListener("change", updatePlayerFromInput);
   $("#playerRows").addEventListener("click", (event) => {
+    const foldButton = event.target.closest("[data-player-fold]");
+    if (foldButton) {
+      const player = state.players.find((item) => item.id === foldButton.dataset.playerFold);
+      if (player) player.active = !player.active;
+      state.potWinners = {};
+      renderPlayers();
+      return;
+    }
     const button = event.target.closest("[data-remove-player]");
     if (!button) return;
     state.players = state.players.filter((player) => player.id !== button.dataset.removePlayer);
     state.potWinners = {};
-    saveState();
     renderPlayers();
   });
   $("#calculationResults").addEventListener("click", (event) => {
@@ -710,15 +1084,13 @@ function bindEvents() {
 
 function updatePlayerFromInput(event) {
   const target = event.target;
-  const id = target.dataset.playerName || target.dataset.playerAmount || target.dataset.playerActive;
+  const id = target.dataset.playerName || target.dataset.playerAmount;
   if (!id) return;
   const player = state.players.find((item) => item.id === id);
   if (!player) return;
   if (target.dataset.playerName) player.name = target.value;
   if (target.dataset.playerAmount) player.amount = Math.max(0, Number(target.value) || 0);
-  if (target.dataset.playerActive) player.active = target.checked;
   state.potWinners = {};
-  saveState();
 }
 
 function initialize() {
@@ -734,3 +1106,4 @@ function initialize() {
 }
 
 initialize();
+
