@@ -11,7 +11,7 @@
     <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="icon" href="./icon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="./icon.svg" />
-    <link rel="stylesheet" href="./styles.css?v=8" />
+    <link rel="stylesheet" href="./styles.css?v=9" />
     <script src="https://telegram.org/js/telegram-web-app.js?64"></script>
     <title>Poker Dealer Clock</title>
   </head>
@@ -124,6 +124,7 @@
               <button class="preset-button" data-auto-hours="6" type="button">6 часов</button>
             </div>
             <p class="preset-note">Выбранное время — только игровые уровни. После каждого часа игры добавляется отдельный перерыв на 10 минут.</p>
+            <p class="auto-method" id="autoMethodSummary">Структура рассчитывается по глубине стартового стека и общему количеству фишек в игре.</p>
           </div>
 
           <div class="settings-card">
@@ -215,7 +216,7 @@
     </div>
 
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
-    <script src="./app.js?v=8"></script>
+    <script src="./app.js?v=9"></script>
   </body>
 </html>
 
